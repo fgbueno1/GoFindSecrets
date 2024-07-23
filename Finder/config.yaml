@@ -1,0 +1,5 @@
+repos:
+  - 'test/test'
+keywords:
+  - 'secret'
+  - 'password'
