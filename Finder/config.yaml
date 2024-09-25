@@ -1,5 +1,8 @@
+api-key: ""
 repos:
   - 'test/test'
+orgs:
+  - ''
 keywords:
   - 'secret'
   - 'password'

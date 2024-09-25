@@ -1,46 +1,26 @@
 package main
 
 import (
-	client "GoFindSecrets/Client"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
-	"strings"
 	"time"
 
-	"github.com/antchfx/htmlquery"
 	"gopkg.in/yaml.v2"
 )
 
-type GithubInfo struct {
-	SessionToken string
-	Username     string
-}
-
 type configuration struct {
+	ApiKey   string   `yaml:"api-key"`
 	Repos    []string `yaml:"repos"`
+	Orgs     []string `yaml:"orgs"`
 	Keywords []string `yaml:"keywords"`
 }
 
-type ParsedData struct {
-	Repo    string `json:"repo,omitempty"`
-	Url     string `json:"url,omitempty"`
-	Keyword string `json:"keyword,omitempty"`
-}
-
 func main() {
-	var username string
-	var sessionToken string
-	fmt.Print("Enter Username: ")
-	fmt.Scanln(&username)
-	fmt.Print("Enter User Session Token: ")
-	fmt.Scanln(&sessionToken)
-	githubC, err := client.GithubNewClient(username, sessionToken)
-	if err != nil {
-		log.Fatal(err)
-	}
 	var config configuration
 	yamlFile, err := os.ReadFile("config.yaml")
 	if err != nil {
@@ -52,32 +32,40 @@ func main() {
 	}
 	dataToWrite := ""
 	for _, repo := range config.Repos {
+		if repo == "" {
+			continue
+		}
 		for _, keyword := range config.Keywords {
-			query := fmt.Sprintf("repo:%s %s", repo, keyword)
-			codeListUrlPage := fmt.Sprintf("https://github.com/search?q=%s&type=code", url.QueryEscape(query))
-			codeList, err := githubC.R().Get(codeListUrlPage)
-			if err != nil {
-				log.Print(err)
-				continue
-			}
-			doc, err := htmlquery.Parse(strings.NewReader(string(codeList.Body())))
-			if err != nil {
-				continue
-			}
-
-			node, err := htmlquery.QueryAll(doc, `//div[contains(@class, "search-title")]`)
-			if node == nil || err != nil {
-				continue
-			}
-			for _, item := range node {
-				url := htmlquery.FindOne(item, "//a")
-				urlValue := htmlquery.SelectAttr(url, "href")
-				if urlValue == "" {
-					continue
-				}
+			query := url.QueryEscape(fmt.Sprintf("%s repo:%s", keyword, repo))
+			results := GitSearch(config.ApiKey, query)
+			for _, result := range results.Items {
 				parsedData := ParsedData{
-					Repo:    repo,
-					Url:     htmlquery.SelectAttr(url, "href"),
+					Org:     result.Repository.Owner.Login,
+					Repo:    result.Repository.FullName,
+					File:    result.Name,
+					Url:     result.HTMLURL,
+					Keyword: keyword,
+				}
+				jsonData, _ := json.Marshal(parsedData)
+				dataToWrite += string(jsonData) + "\n"
+			}
+			time.Sleep(1 * time.Second)
+		}
+		time.Sleep(10 * time.Second)
+	}
+	for _, org := range config.Orgs {
+		if org == "" {
+			continue
+		}
+		for _, keyword := range config.Keywords {
+			query := url.QueryEscape(fmt.Sprintf("%s org:%s", keyword, org))
+			results := GitSearch(config.ApiKey, query)
+			for _, result := range results.Items {
+				parsedData := ParsedData{
+					Org:     result.Repository.Owner.Login,
+					Repo:    result.Repository.FullName,
+					File:    result.Name,
+					Url:     result.HTMLURL,
 					Keyword: keyword,
 				}
 				jsonData, _ := json.Marshal(parsedData)
@@ -92,4 +80,32 @@ func main() {
 		fileName := fmt.Sprintf("%v.json", currentTime.Format("2006-01-02-15-04-05"))
 		os.WriteFile(fileName, []byte(dataToWrite), 0644)
 	}
+}
+
+func GitSearch(apiKey string, query string) GitSearchResult {
+	client := &http.Client{}
+	url := fmt.Sprintf("https://api.github.com/search/code?q=%s", query)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	bodyText, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var jsonData GitSearchResult
+	err = json.Unmarshal(bodyText, &jsonData)
+	if err != nil {
+		fmt.Print("Error Unmarshal")
+		log.Fatal(err)
+	}
+	return jsonData
 }
